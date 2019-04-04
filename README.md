@@ -1,6 +1,17 @@
 The Moby Project
 ================
 
+# Special Project Notes
+This repository is a special fork of the moby project intended to provide a single bit of extra functionality. 
+Namely, it hacks the `docker save` command to save only the last layer of the image.
+
+In order to build the patched `dockerd` binary from this repo follow these steps:
+ - `make BIND_DIR=. shell`
+ - ... wait for that to finish
+ - `hack/make.sh binary`
+ - exit the shell, then copy the dockerd binary to its intended location...
+ - `mkdir out && cp ./bundles/binary-daemon/dockerd-dev ./out/dockerd && cp ./bundles/binary-daemon/dockerd-dev.sha256 ./out/dockerd.sha256`
+
 ![Moby Project logo](docs/static_files/moby-project-logo.png "The Moby Project")
 
 Moby is an open-source project created by Docker to enable and accelerate software containerization.
