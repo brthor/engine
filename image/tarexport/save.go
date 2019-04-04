@@ -322,7 +322,7 @@ func (s *saveSession) saveImage(id image.ID) (map[layer.DiffID]distribution.Desc
 		}
 
 		v1Img.OS = img.OS
-		src, err := s.saveLayer(rootFS.ChainID(), v1Img, img.Created)
+		src, err := s.saveLayer(rootFS.ChainID(), v1Img, img.Created, i == len(img.RootFS.DiffIDs) - 1)
 		if err != nil {
 			return nil, err
 		}
@@ -348,7 +348,7 @@ func (s *saveSession) saveImage(id image.ID) (map[layer.DiffID]distribution.Desc
 	return foreignSrcs, nil
 }
 
-func (s *saveSession) saveLayer(id layer.ChainID, legacyImg image.V1Image, createdTime time.Time) (distribution.Descriptor, error) {
+func (s *saveSession) saveLayer(id layer.ChainID, legacyImg image.V1Image, createdTime time.Time, doSave bool) (distribution.Descriptor, error) {
 	if _, exists := s.savedLayers[legacyImg.ID]; exists {
 		return distribution.Descriptor{}, nil
 	}
@@ -358,22 +358,6 @@ func (s *saveSession) saveLayer(id layer.ChainID, legacyImg image.V1Image, creat
 		return distribution.Descriptor{}, err
 	}
 
-	// todo: why is this version file here?
-	if err := ioutil.WriteFile(filepath.Join(outDir, legacyVersionFileName), []byte("1.0"), 0644); err != nil {
-		return distribution.Descriptor{}, err
-	}
-
-	imageConfig, err := json.Marshal(legacyImg)
-	if err != nil {
-		return distribution.Descriptor{}, err
-	}
-
-	if err := ioutil.WriteFile(filepath.Join(outDir, legacyConfigFileName), imageConfig, 0644); err != nil {
-		return distribution.Descriptor{}, err
-	}
-
-	// serialize filesystem
-	layerPath := filepath.Join(outDir, legacyLayerFileName)
 	operatingSystem := legacyImg.OS
 	if operatingSystem == "" {
 		operatingSystem = runtime.GOOS
@@ -382,45 +366,65 @@ func (s *saveSession) saveLayer(id layer.ChainID, legacyImg image.V1Image, creat
 	if err != nil {
 		return distribution.Descriptor{}, err
 	}
-	defer layer.ReleaseAndLog(s.lss[operatingSystem], l)
 
-	if oldPath, exists := s.diffIDPaths[l.DiffID()]; exists {
-		relPath, err := filepath.Rel(outDir, oldPath)
+	if doSave == true {
+		// todo: why is this version file here?
+		if err := ioutil.WriteFile(filepath.Join(outDir, legacyVersionFileName), []byte("1.0"), 0644); err != nil {
+			return distribution.Descriptor{}, err
+		}
+
+		imageConfig, err := json.Marshal(legacyImg)
 		if err != nil {
 			return distribution.Descriptor{}, err
 		}
-		if err := os.Symlink(relPath, layerPath); err != nil {
-			return distribution.Descriptor{}, errors.Wrap(err, "error creating symlink while saving layer")
-		}
-	} else {
-		// Use system.CreateSequential rather than os.Create. This ensures sequential
-		// file access on Windows to avoid eating into MM standby list.
-		// On Linux, this equates to a regular os.Create.
-		tarFile, err := system.CreateSequential(layerPath)
-		if err != nil {
-			return distribution.Descriptor{}, err
-		}
-		defer tarFile.Close()
 
-		arch, err := l.TarStream()
-		if err != nil {
-			return distribution.Descriptor{}, err
-		}
-		defer arch.Close()
-
-		if _, err := io.Copy(tarFile, arch); err != nil {
+		if err := ioutil.WriteFile(filepath.Join(outDir, legacyConfigFileName), imageConfig, 0644); err != nil {
 			return distribution.Descriptor{}, err
 		}
 
-		for _, fname := range []string{"", legacyVersionFileName, legacyConfigFileName, legacyLayerFileName} {
-			// todo: maybe save layer created timestamp?
-			if err := system.Chtimes(filepath.Join(outDir, fname), createdTime, createdTime); err != nil {
+		// serialize filesystem
+		layerPath := filepath.Join(outDir, legacyLayerFileName)
+		defer layer.ReleaseAndLog(s.lss[operatingSystem], l)
+
+		if oldPath, exists := s.diffIDPaths[l.DiffID()]; exists {
+			relPath, err := filepath.Rel(outDir, oldPath)
+			if err != nil {
 				return distribution.Descriptor{}, err
 			}
-		}
+			if err := os.Symlink(relPath, layerPath); err != nil {
+				return distribution.Descriptor{}, errors.Wrap(err, "error creating symlink while saving layer")
+			}
+		} else {
+			// Use system.CreateSequential rather than os.Create. This ensures sequential
+			// file access on Windows to avoid eating into MM standby list.
+			// On Linux, this equates to a regular os.Create.
+			tarFile, err := system.CreateSequential(layerPath)
+			if err != nil {
+				return distribution.Descriptor{}, err
+			}
+			defer tarFile.Close()
 
-		s.diffIDPaths[l.DiffID()] = layerPath
+			arch, err := l.TarStream()
+			if err != nil {
+				return distribution.Descriptor{}, err
+			}
+			defer arch.Close()
+
+			if _, err := io.Copy(tarFile, arch); err != nil {
+				return distribution.Descriptor{}, err
+			}
+
+			for _, fname := range []string{"", legacyVersionFileName, legacyConfigFileName, legacyLayerFileName} {
+				// todo: maybe save layer created timestamp?
+				if err := system.Chtimes(filepath.Join(outDir, fname), createdTime, createdTime); err != nil {
+					return distribution.Descriptor{}, err
+				}
+			}
+
+			s.diffIDPaths[l.DiffID()] = layerPath
+		}
 	}
+	
 	s.savedLayers[legacyImg.ID] = struct{}{}
 
 	var src distribution.Descriptor
